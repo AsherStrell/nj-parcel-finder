@@ -48,6 +48,7 @@ const PINS_STORAGE_KEY = 'nj-parcel-pins';
 
 const COLUMNS = [
   { key: 'STATUS',      label: 'Status',           compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
+  { key: 'OWNER_COUNT', label: '# in Area',        compute: r => r._ownerCount ?? 1, numeric: true },
   { key: 'OWNER_NAME',  label: 'Owner Name' },
   { key: 'ST_ADDRESS',  label: 'Owner Address',    display: r => {
       const addr = r.ST_ADDRESS || '';
@@ -193,11 +194,37 @@ function buildHeader() {
 
 function sortRows(idx, dir) {
   const col = COLUMNS[idx];
+  const mul = dir === 'asc' ? 1 : -1;
   currentRows.sort((a, b) => {
+    if (col.numeric) {
+      return (Number(cellValue(a, col)) - Number(cellValue(b, col))) * mul;
+    }
     const va = cellValue(a, col).toString();
     const vb = cellValue(b, col).toString();
-    return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    return va.localeCompare(vb) * mul;
   });
+}
+
+function ownerKey(row) {
+  const norm = (s) => (s ?? '').toString().toUpperCase().replace(/\s+/g, ' ').trim();
+  const a = norm(row.ST_ADDRESS);
+  const c = norm(row.CITY_STATE);
+  const z = norm(row.ZIP_CODE);
+  if (!a && !c && !z) return '';
+  return `${a}|${c}|${z}`;
+}
+
+function computeOwnerCounts(rows) {
+  const counts = new Map();
+  for (const r of rows) {
+    const k = ownerKey(r);
+    if (!k) continue;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  for (const r of rows) {
+    const k = ownerKey(r);
+    r._ownerCount = k ? counts.get(k) : 1;
+  }
 }
 
 const NJ_LIKE_PATTERNS = [
@@ -282,6 +309,7 @@ async function runQuery(bounds) {
       }
       offset += PAGE_SIZE;
     }
+    computeOwnerCounts(currentRows);
     sortRows(0, 'desc');
     renderRows(currentRows, { sortedIdx: 0, sortedDir: 'desc' });
     btnCsv.disabled = currentRows.length === 0;
