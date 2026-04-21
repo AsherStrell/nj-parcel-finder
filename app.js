@@ -83,10 +83,28 @@ const COLUMNS = [
       display: r => r.PAMS_PIN ? 'Open' : '',
       href:    r => njParcelsUrl(r),
       skipSort: true },
+  { key: 'GMAPS_LINK',  label: 'Maps',
+      display: r => r.PROP_LOC ? 'Open' : '',
+      href:    r => r.PROP_LOC
+        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(buildAddressQuery(r))}`
+        : '',
+      skipSort: true },
+  { key: 'ZILLOW_LINK', label: 'Zillow',
+      display: r => r.PROP_LOC ? 'Open' : '',
+      href:    r => r.PROP_LOC
+        ? `https://www.zillow.com/homes/${encodeURIComponent(buildAddressQuery(r))}_rb/`
+        : '',
+      skipSort: true },
+  { key: 'NJDEP_LINK',  label: 'NJDEP',
+      display: r => r.PROP_LOC ? 'Open' : '',
+      href:    r => r.PROP_LOC
+        ? `https://njdep.maps.arcgis.com/apps/webappviewer/index.html?id=02251e521d97454aabadfd8cf168e44d&find=${encodeURIComponent(buildAddressQuery(r))}`
+        : '',
+      skipSort: true },
   { key: 'OWNER_NAME',  label: 'Owner Name' }
 ];
 const SERVICE_FIELDS = ['PAMS_PIN', 'ST_ADDRESS', 'CITY_STATE', 'ZIP_CODE',
-  ...COLUMNS.filter(c => !c.compute && !c.render && c.key !== 'NJP_LINK').map(c => c.key)];
+  ...COLUMNS.filter(c => !c.compute && !c.render && !c.href).map(c => c.key)];
 
 const FULL_STATE_NAMES = {
   'NEW JERSEY': 'NJ', 'NEW YORK': 'NY', 'PENNSYLVANIA': 'PA',
@@ -159,6 +177,11 @@ function njParcelsUrl(row) {
   const segs = [p.muni, p.block, p.lot];
   if (p.qual) segs.push(p.qual);
   return `https://njparcels.com/property/${segs.map(encodeURIComponent).join('/')}`;
+}
+
+function buildAddressQuery(row) {
+  const zipPart = row.ZIP_CODE ? `NJ ${row.ZIP_CODE}` : 'NJ';
+  return [row.PROP_LOC, row.MUN_NAME, zipPart].filter(Boolean).join(', ');
 }
 
 const map = L.map('map').setView([40.0583, -74.4057], 8);
