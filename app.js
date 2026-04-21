@@ -63,17 +63,41 @@ const COLUMNS = [
 ];
 const SERVICE_FIELDS = ['PAMS_PIN', ...COLUMNS.filter(c => !c.compute).map(c => c.key)];
 
+const FULL_STATE_NAMES = {
+  'NEW JERSEY': 'NJ', 'NEW YORK': 'NY', 'PENNSYLVANIA': 'PA',
+  'CONNECTICUT': 'CT', 'MASSACHUSETTS': 'MA', 'FLORIDA': 'FL',
+  'CALIFORNIA': 'CA', 'MARYLAND': 'MD', 'DELAWARE': 'DE',
+  'VIRGINIA': 'VA', 'NORTH CAROLINA': 'NC', 'SOUTH CAROLINA': 'SC'
+};
+
 function extractState(cityState) {
   if (!cityState) return '';
-  const parts = cityState.trim().split(/\s+/);
-  const last = parts[parts.length - 1];
-  return /^[A-Z]{2}$/.test(last) ? last : '';
+  let s = cityState.toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')       // strip punctuation
+    .replace(/\s+\d{5,}\s*$/, '')       // strip trailing ZIP
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (const [name, abbr] of Object.entries(FULL_STATE_NAMES)) {
+    if (s === name || s.endsWith(' ' + name)) return abbr;
+  }
+  const endTwo = s.match(/(?:^|\s)([A-Z]{2})$/);
+  if (endTwo) return endTwo[1];
+  const spaced = s.match(/(?:^|\s)([A-Z])\s([A-Z])$/);
+  if (spaced) return spaced[1] + spaced[2];
+  const anyTokens = s.match(/\b[A-Z]{2}\b/g);
+  if (anyTokens) return anyTokens[anyTokens.length - 1];
+  const last = s.split(' ').pop() || '';
+  for (const abbr of Object.values(FULL_STATE_NAMES)) {
+    if (last.startsWith(abbr)) return abbr;
+  }
+  return '';
 }
 const PINS_STORAGE_KEY = 'nj-parcel-pins';
 
 function isOutOfState(cityState) {
-  if (!cityState) return true;
-  return !/\sNJ\s*$/.test(cityState);
+  const st = extractState(cityState);
+  if (!st) return true;
+  return st !== 'NJ';
 }
 
 function cellValue(row, col) {
@@ -173,9 +197,25 @@ function sortRows(idx, dir) {
   });
 }
 
+const NJ_LIKE_PATTERNS = [
+  '% NJ',    '%,NJ',
+  '% NJ %',  '%,NJ %',
+  '% NJ.',   '%,NJ.',
+  '% NJ,',   '%,NJ,',
+  '% N.J.',  '%,N.J.',
+  '% N.J',   '%,N.J',
+  '% N. J.', '%,N. J.',
+  '% N J',   '%,N J',
+  '% NEW JERSEY',  '%,NEW JERSEY',
+  '% NEW JERSEY.', '%,NEW JERSEY.'
+];
+
 function buildWhere() {
   const clauses = [];
-  if (filterOos.checked)  clauses.push("CITY_STATE NOT LIKE '% NJ'");
+  if (filterOos.checked) {
+    const nj = NJ_LIKE_PATTERNS.map(p => `CITY_STATE NOT LIKE '${p}'`).join(' AND ');
+    clauses.push(`(${nj})`);
+  }
   if (filterDiff.checked) clauses.push("ST_ADDRESS <> PROP_LOC");
   return clauses.length ? clauses.join(' AND ') : '1=1';
 }
@@ -223,7 +263,11 @@ async function runQuery(bounds) {
       if (json.error) throw new Error(json.error.message || 'Service error');
 
       const features = json.features || [];
-      for (const f of features) currentRows.push(f.attributes);
+      for (const f of features) {
+        const a = f.attributes;
+        if (filterOos.checked && !isOutOfState(a.CITY_STATE)) continue;
+        currentRows.push(a);
+      }
 
       if (currentRows.length >= MAX_ROWS) {
         setStatus(`Stopped at ${MAX_ROWS.toLocaleString()} rows — draw a smaller box for a complete list.`, 'error');
