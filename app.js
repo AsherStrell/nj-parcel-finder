@@ -46,9 +46,13 @@ const PAGE_SIZE = 1000;
 const MAX_ROWS = 10000;
 
 const COLUMNS = [
-  { key: 'STATUS',      label: 'Status',            compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
+  { key: 'STATUS',      label: 'Status',           compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
   { key: 'OWNER_NAME',  label: 'Owner Name' },
-  { key: 'ST_ADDRESS',  label: 'Owner Address' },
+  { key: 'ST_ADDRESS',  label: 'Owner Address',    display: r => {
+      const addr = r.ST_ADDRESS || '';
+      const st = extractState(r.CITY_STATE);
+      return st ? (addr ? `${addr} (${st})` : `(${st})`) : addr;
+    } },
   { key: 'CITY_STATE',  label: 'Owner City/State' },
   { key: 'ZIP_CODE',    label: 'Owner Zip' },
   { key: 'PROP_LOC',    label: 'Property Address' },
@@ -58,6 +62,13 @@ const COLUMNS = [
   { key: 'PCLLOT',      label: 'Lot' }
 ];
 const SERVICE_FIELDS = ['PAMS_PIN', ...COLUMNS.filter(c => !c.compute).map(c => c.key)];
+
+function extractState(cityState) {
+  if (!cityState) return '';
+  const parts = cityState.trim().split(/\s+/);
+  const last = parts[parts.length - 1];
+  return /^[A-Z]{2}$/.test(last) ? last : '';
+}
 const PINS_STORAGE_KEY = 'nj-parcel-pins';
 
 function isOutOfState(cityState) {
@@ -66,7 +77,9 @@ function isOutOfState(cityState) {
 }
 
 function cellValue(row, col) {
-  return col.compute ? col.compute(row) : (row[col.key] ?? '');
+  if (col.display) return col.display(row);
+  if (col.compute) return col.compute(row);
+  return row[col.key] ?? '';
 }
 
 const map = L.map('map').setView([40.0583, -74.4057], 8);
