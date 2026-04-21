@@ -105,6 +105,19 @@ const COUNTY_TAX_DEFAULT_PROVIDER = {
 
 const taxRecordCache = loadTaxRecordCache();
 
+const NJ_LIKE_PATTERNS = [
+  '% NJ',    '%,NJ',
+  '% NJ %',  '%,NJ %',
+  '% NJ.',   '%,NJ.',
+  '% NJ,',   '%,NJ,',
+  '% N.J.',  '%,N.J.',
+  '% N.J',   '%,N.J',
+  '% N. J.', '%,N. J.',
+  '% N J',   '%,N J',
+  '% NEW JERSEY',  '%,NEW JERSEY',
+  '% NEW JERSEY.', '%,NEW JERSEY.'
+];
+
 const COLUMNS = [
   { key: 'STATUS',      label: 'Status',           compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
   { key: 'DATA_SOURCE', label: 'Primary Source', compute: r => r._recordSource || COUNTY_TAX_FALLBACK_SOURCE_LABEL },
@@ -641,7 +654,6 @@ function setCachedTaxRecord(cacheKey, value) {
     fetchedAt: Date.now(),
     expiresAt: Date.now() + COUNTY_TAX_TTL_MS
   };
-  persistTaxRecordCache();
 }
 
 function safeTrim(value) {
@@ -761,12 +773,18 @@ async function enrichRowsWithCountyRecords(rows, options = {}) {
 
   const workerCount = Math.min(COUNTY_TAX_ENRICHMENT_CONCURRENCY, lookupOrder.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (lookupOrder.length > 0) persistTaxRecordCache();
 
   return { lookedUp, fromCounty, errors, totalCandidates: lookupOrder.length };
 }
 
 function buildWhere() {
   const clauses = [];
+  if (filterOos.checked) {
+    const nj = NJ_LIKE_PATTERNS.map(p => `CITY_STATE NOT LIKE '${p}'`).join(' AND ');
+    clauses.push(`(${nj})`);
+  }
+  if (filterDiff.checked) clauses.push("ST_ADDRESS <> PROP_LOC");
   if (filterSold.checked) {
     // DEED_DATE is YYMMDD with a 2-digit year; string compare would put '99' > '20'.
     // Pivot at 30: YY<30 → 20YY, YY≥30 → 19YY. Keep: null, 2000-2019 (<'200101'), 1930-1999 (≥'300101').
@@ -836,13 +854,14 @@ async function runQuery(bounds) {
     }
 
     initRecordSourceDefaults(currentRows);
+    // Pre-filter before hitting the county endpoint so we only pay for HTTP on survivors.
+    currentRows = applyPostQueryFilters(currentRows);
     const stats = await enrichRowsWithCountyRecords(currentRows, { signal });
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    currentRows = applyPostQueryFilters(currentRows);
     if (stats.totalCandidates > 0) {
       setStatus(`County check: ${stats.fromCounty}/${stats.totalCandidates} rows enriched (${stats.errors} errors).`);
     }
-
-    currentRows = applyPostQueryFilters(currentRows);
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     computeOwnerCounts(currentRows);
 
