@@ -49,7 +49,13 @@ const PINS_STORAGE_KEY = 'nj-parcel-pins';
 const COLUMNS = [
   { key: 'STATUS',      label: 'Status',           compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
   { key: 'OWNER_COUNT', label: '# in Area',        compute: r => r._ownerCount ?? 1, numeric: true },
-  { key: 'OWNER_NAME',  label: 'Owner Name' },
+  { key: 'DEED_DATE',   label: 'Date Sold',
+      display: r => formatYymmdd(r.DEED_DATE),
+      sortKey: r => yymmddSortKey(r.DEED_DATE) },
+  { key: 'SALE_PRICE',  label: 'Sold For',
+      display: r => r.SALE_PRICE ? `$${Number(r.SALE_PRICE).toLocaleString()}` : '',
+      sortKey: r => Number(r.SALE_PRICE) || 0,
+      numeric: true },
   { key: 'ST_ADDRESS',  label: 'Owner Address',    display: r => {
       const addr = r.ST_ADDRESS || '';
       const st = extractState(r.CITY_STATE);
@@ -62,18 +68,12 @@ const COLUMNS = [
   { key: 'COUNTY',      label: 'County' },
   { key: 'PCLBLOCK',    label: 'Block' },
   { key: 'PCLLOT',      label: 'Lot' },
-  { key: 'DEED_DATE',   label: 'Last Sold',
-      display: r => formatYymmdd(r.DEED_DATE),
-      sortKey: r => yymmddSortKey(r.DEED_DATE) },
-  { key: 'SALE_PRICE',  label: 'Sale Price',
-      display: r => r.SALE_PRICE ? `$${Number(r.SALE_PRICE).toLocaleString()}` : '',
-      sortKey: r => Number(r.SALE_PRICE) || 0,
-      numeric: true },
   { key: 'SALES_CODE',  label: 'Sale Code' },
   { key: 'NJP_LINK',    label: 'NJparcels',
       display: r => r.PAMS_PIN ? 'Open' : '',
       href:    r => njParcelsUrl(r),
-      skipSort: true }
+      skipSort: true },
+  { key: 'OWNER_NAME',  label: 'Owner Name' }
 ];
 const SERVICE_FIELDS = ['PAMS_PIN', ...COLUMNS.filter(c => !c.compute && c.key !== 'NJP_LINK').map(c => c.key)];
 
