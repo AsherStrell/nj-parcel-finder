@@ -111,6 +111,7 @@ fieldset label {
 #results-table tbody tr:hover { background: #f6f6f8; }
 #results-table tbody tr.pinned { background: #fff6e5; }
 #results-table tbody tr.pinned:hover { background: #ffeccc; }
+#results-table td .cell-sub { color: #6b6b70; font-size: 11px; }
 #results-table td.status-oos { color: #b34a00; font-weight: 600; }
 #results-table td.status-in  { color: #6b6b70; }
 #results-table td a { color: #007aff; text-decoration: none; }

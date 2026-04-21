@@ -56,13 +56,23 @@ const COLUMNS = [
       display: r => r.SALE_PRICE ? `$${Number(r.SALE_PRICE).toLocaleString()}` : '',
       sortKey: r => Number(r.SALE_PRICE) || 0,
       numeric: true },
-  { key: 'ST_ADDRESS',  label: 'Owner Address',    display: r => {
-      const addr = r.ST_ADDRESS || '';
-      const st = extractState(r.CITY_STATE);
-      return st ? (addr ? `${addr} (${st})` : `(${st})`) : addr;
-    } },
-  { key: 'CITY_STATE',  label: 'Owner City/State' },
-  { key: 'ZIP_CODE',    label: 'Owner Zip' },
+  { key: 'OWNER_MAILING', label: 'Owner Mailing',
+      render: (r, td) => {
+        const street = document.createElement('div');
+        street.textContent = r.ST_ADDRESS || '';
+        const loc = document.createElement('div');
+        loc.className = 'cell-sub';
+        loc.textContent = [r.CITY_STATE, r.ZIP_CODE].filter(Boolean).join(' ');
+        td.appendChild(street);
+        td.appendChild(loc);
+      },
+      csv: r => [r.ST_ADDRESS, r.CITY_STATE, r.ZIP_CODE].filter(Boolean).join(', '),
+      sortKey: r => {
+        const state = extractState(r.CITY_STATE) || 'ZZ';
+        const city  = (r.CITY_STATE || '').toUpperCase();
+        const addr  = (r.ST_ADDRESS || '').toUpperCase();
+        return `${state}|${city}|${addr}`;
+      } },
   { key: 'PROP_LOC',    label: 'Property Address' },
   { key: 'MUN_NAME',    label: 'Municipality' },
   { key: 'COUNTY',      label: 'County' },
@@ -75,7 +85,8 @@ const COLUMNS = [
       skipSort: true },
   { key: 'OWNER_NAME',  label: 'Owner Name' }
 ];
-const SERVICE_FIELDS = ['PAMS_PIN', ...COLUMNS.filter(c => !c.compute && c.key !== 'NJP_LINK').map(c => c.key)];
+const SERVICE_FIELDS = ['PAMS_PIN', 'ST_ADDRESS', 'CITY_STATE', 'ZIP_CODE',
+  ...COLUMNS.filter(c => !c.compute && !c.render && c.key !== 'NJP_LINK').map(c => c.key)];
 
 const FULL_STATE_NAMES = {
   'NEW JERSEY': 'NJ', 'NEW YORK': 'NY', 'PENNSYLVANIA': 'PA',
@@ -383,7 +394,9 @@ function renderRows(rows, opts = {}) {
     for (const col of COLUMNS) {
       const td = document.createElement('td');
       const v = cellValue(r, col);
-      if (col.href) {
+      if (col.render) {
+        col.render(r, td);
+      } else if (col.href) {
         const url = col.href(r);
         if (url && v) {
           const a = document.createElement('a');
@@ -595,7 +608,9 @@ function downloadCsv(rows) {
   };
   const lines = [COLUMNS.map(c => c.label).map(escape).join(',')];
   for (const r of rows) {
-    lines.push(COLUMNS.map(c => escape(c.href ? c.href(r) : cellValue(r, c))).join(','));
+    lines.push(COLUMNS.map(c =>
+      escape(c.csv ? c.csv(r) : c.href ? c.href(r) : cellValue(r, c))
+    ).join(','));
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
