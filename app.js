@@ -45,9 +45,69 @@ const SERVICE_URL = 'https://maps.nj.gov/arcgis/rest/services/Framework/Cadastra
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 10000;
 const PINS_STORAGE_KEY = 'nj-parcel-pins';
+const COUNTY_TAX_CACHE_KEY = 'nj-parcel-tax-records-v1';
+const COUNTY_TAX_TTL_MS = 24 * 60 * 60 * 1000;
+const COUNTY_TAX_ENRICHMENT_CONCURRENCY = 4;
+const COUNTY_TAX_REQUEST_TIMEOUT_MS = 8000;
+const COUNTY_TAX_PRIMARY_SOURCE_LABEL = 'County records';
+const COUNTY_TAX_FALLBACK_SOURCE_LABEL = 'NJOGIS';
+
+const COUNTY_INFO = [
+  { code: '01', name: 'ATLANTIC' },
+  { code: '02', name: 'BERGEN' },
+  { code: '03', name: 'BURLINGTON' },
+  { code: '04', name: 'CAMDEN' },
+  { code: '05', name: 'CAPE MAY' },
+  { code: '06', name: 'CUMBERLAND' },
+  { code: '07', name: 'ESSEX' },
+  { code: '08', name: 'GLOUCESTER' },
+  { code: '09', name: 'HUDSON' },
+  { code: '10', name: 'HUNTERDON' },
+  { code: '11', name: 'MERCER' },
+  { code: '12', name: 'MIDDLESEX' },
+  { code: '13', name: 'MONMOUTH' },
+  { code: '14', name: 'MORRIS' },
+  { code: '15', name: 'OCEAN' },
+  { code: '16', name: 'PASSAIC' },
+  { code: '17', name: 'SALEM' },
+  { code: '18', name: 'SOMERSET' },
+  { code: '19', name: 'SUSSEX' },
+  { code: '20', name: 'UNION' },
+  { code: '21', name: 'WARREN' }
+];
+
+const COUNTY_NAME_TO_CODE = COUNTY_INFO.reduce((acc, item) => {
+  acc[item.name] = item.code;
+  acc[item.name.replace(/\s+/g, '')] = item.code;
+  acc[item.name.replace(/[^A-Z]/g, '')] = item.code;
+  return acc;
+}, {});
+
+const COUNTY_TAX_REGISTRY = COUNTY_INFO.reduce((acc, item) => {
+  acc[item.code] = {
+    code: item.code,
+    name: item.name,
+    enabled: true,
+    provider: 'NJParcels county attributes cache',
+    endpoint: `https://cache.njparcels.com/attributes/v1.0/nj/{pin}?owner=1&assessment=1`,
+    fetch: fetchCountyRecordFromNjParcels
+  };
+  return acc;
+}, {});
+const COUNTY_TAX_DEFAULT_PROVIDER = {
+  code: '00',
+  name: 'NJ/Wide',
+  enabled: true,
+  provider: 'NJParcels county attributes cache',
+  endpoint: 'https://cache.njparcels.com/attributes/v1.0/nj/{pin}?owner=1&assessment=1',
+  fetch: fetchCountyRecordFromNjParcels
+};
+
+const taxRecordCache = loadTaxRecordCache();
 
 const COLUMNS = [
   { key: 'STATUS',      label: 'Status',           compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
+  { key: 'DATA_SOURCE', label: 'Primary Source', compute: r => r._recordSource || COUNTY_TAX_FALLBACK_SOURCE_LABEL },
   { key: 'OWNER_COUNT', label: '# in Area',        compute: r => r._ownerCount ?? 1, numeric: true },
   { key: 'DEED_DATE',   label: 'Date Sold',
       display: r => formatYymmdd(r.DEED_DATE),
@@ -56,6 +116,21 @@ const COLUMNS = [
       display: r => r.SALE_PRICE ? `$${Number(r.SALE_PRICE).toLocaleString()}` : '',
       sortKey: r => Number(r.SALE_PRICE) || 0,
       numeric: true },
+  { key: 'NET_VALUE',      label: 'Net Value',
+      display: r => formatCurrency(r.NET_VALUE),
+      sortKey: r => Number(r.NET_VALUE) || 0,
+      numeric: true },
+  { key: 'LAND_VALUE',     label: 'Land Value',
+      display: r => formatCurrency(r.LAND_VALUE),
+      sortKey: r => Number(r.LAND_VALUE) || 0,
+      numeric: true },
+  { key: 'IMPROVEMENT_VALUE', label: 'Improvement Value',
+      display: r => formatCurrency(r.IMPROVEMENT_VALUE),
+      sortKey: r => Number(r.IMPROVEMENT_VALUE) || 0,
+      numeric: true },
+  { key: 'DEED_BOOK',     label: 'Deed Book', csv: r => r.DEED_BOOK || '' },
+  { key: 'DEED_PAGE',     label: 'Deed Page', csv: r => r.DEED_PAGE || '' },
+  { key: 'ADDITIONAL_LOTS', label: 'Additional Lots', csv: r => r.ADDITIONAL_LOTS || '' },
   { key: 'OWNER_MAILING', label: 'Owner Mailing',
       render: (r, td) => {
         const street = document.createElement('div');
@@ -104,7 +179,9 @@ const COLUMNS = [
   { key: 'OWNER_NAME',  label: 'Owner Name' }
 ];
 const SERVICE_FIELDS = ['PAMS_PIN', 'ST_ADDRESS', 'CITY_STATE', 'ZIP_CODE',
-  ...COLUMNS.filter(c => !c.compute && !c.render && !c.href).map(c => c.key)];
+  'PROP_LOC', 'MUN_NAME', 'COUNTY', 'PCLBLOCK', 'PCLLOT', 'SALES_CODE',
+  'DEED_DATE', 'SALE_PRICE', 'OWNER_NAME'
+];
 
 const FULL_STATE_NAMES = {
   'NEW JERSEY': 'NJ', 'NEW YORK': 'NY', 'PENNSYLVANIA': 'PA',
@@ -154,6 +231,17 @@ function formatYymmdd(s) {
   const yy = s.slice(0, 2), mm = s.slice(2, 4), dd = s.slice(4, 6);
   const year = Number(yy) >= 30 ? `19${yy}` : `20${yy}`;
   return `${year}-${mm}-${dd}`;
+}
+
+function formatCurrency(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return '';
+  return `$${num.toLocaleString()}`;
+}
+
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function yymmddSortKey(s) {
@@ -335,7 +423,7 @@ function sortRows(idx, dir) {
 
 function ownerKey(row) {
   const norm = (s) => (s ?? '').toString().toUpperCase().replace(/\s+/g, ' ').trim();
-  const a = norm(row.ST_ADDRESS);
+  const a = normalizeAddressForCompare(row.ST_ADDRESS);
   const c = norm(row.CITY_STATE);
   const z = norm(row.ZIP_CODE);
   if (!a && !c && !z) return '';
@@ -355,26 +443,330 @@ function computeOwnerCounts(rows) {
   }
 }
 
-const NJ_LIKE_PATTERNS = [
-  '% NJ',    '%,NJ',
-  '% NJ %',  '%,NJ %',
-  '% NJ.',   '%,NJ.',
-  '% NJ,',   '%,NJ,',
-  '% N.J.',  '%,N.J.',
-  '% N.J',   '%,N.J',
-  '% N. J.', '%,N. J.',
-  '% N J',   '%,N J',
-  '% NEW JERSEY',  '%,NEW JERSEY',
-  '% NEW JERSEY.', '%,NEW JERSEY.'
-];
+function resolveCountyCode(countyName) {
+  if (!countyName) return '';
+  const raw = String(countyName).toUpperCase().trim();
+  if (COUNTY_NAME_TO_CODE[raw]) return COUNTY_NAME_TO_CODE[raw];
+  const removedSpaces = raw.replace(/\s+/g, '');
+  if (COUNTY_NAME_TO_CODE[removedSpaces]) return COUNTY_NAME_TO_CODE[removedSpaces];
+  const cleaned = raw.replace(/[^A-Z]/g, '');
+  if (COUNTY_NAME_TO_CODE[cleaned]) return COUNTY_NAME_TO_CODE[cleaned];
+  const droppedSuffix = cleaned.replace(/COUNTY$/, '');
+  return COUNTY_NAME_TO_CODE[droppedSuffix] || '';
+}
+
+function countyRecordCacheKey(pin) {
+  const safePin = (pin || '').toUpperCase().trim();
+  if (!safePin) return '';
+  return safePin;
+}
+
+function normalizeAddressForCompare(value) {
+  return (value || '')
+    .toString()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .trim();
+}
+
+function isAddressMismatch(ownerAddress, propertyAddress) {
+  return normalizeAddressForCompare(ownerAddress) !== normalizeAddressForCompare(propertyAddress);
+}
+
+function applyPostQueryFilters(rows) {
+  const out = [];
+  for (const row of rows) {
+    if (filterOos.checked && !isOutOfState(row.CITY_STATE)) continue;
+    if (filterDiff.checked && !isAddressMismatch(row.ST_ADDRESS, row.PROP_LOC)) continue;
+    out.push(row);
+  }
+  return out;
+}
+
+function hasUsefulText(value) {
+  return (value ?? '').toString().trim().length > 0;
+}
+
+function hasUsefulValue(value) {
+  return safeNumber(value) > 0;
+}
+
+function mergeCountyRecord(row, countyRecord, provider) {
+  if (!countyRecord) {
+    if (!row._recordSource) row._recordSource = COUNTY_TAX_FALLBACK_SOURCE_LABEL;
+    return false;
+  }
+
+  let changed = false;
+  const updates = [];
+
+  if (hasUsefulText(countyRecord.propertyAddress) && row.PROP_LOC !== countyRecord.propertyAddress) {
+    row.PROP_LOC = countyRecord.propertyAddress;
+    changed = true;
+    updates.push('PROP_LOC');
+  }
+  if (hasUsefulText(countyRecord.ownerAddress) && row.ST_ADDRESS !== countyRecord.ownerAddress) {
+    row.ST_ADDRESS = countyRecord.ownerAddress;
+    changed = true;
+    updates.push('ST_ADDRESS');
+  }
+  if (hasUsefulText(countyRecord.ownerCityState) && row.CITY_STATE !== countyRecord.ownerCityState) {
+    row.CITY_STATE = countyRecord.ownerCityState;
+    changed = true;
+    updates.push('CITY_STATE');
+  }
+  if (hasUsefulText(countyRecord.ownerZip) && row.ZIP_CODE !== countyRecord.ownerZip) {
+    row.ZIP_CODE = countyRecord.ownerZip;
+    changed = true;
+    updates.push('ZIP_CODE');
+  }
+  if (hasUsefulText(countyRecord.ownerName) && row.OWNER_NAME !== countyRecord.ownerName) {
+    row.OWNER_NAME = countyRecord.ownerName;
+    changed = true;
+    updates.push('OWNER_NAME');
+  }
+  if (hasUsefulValue(countyRecord.landValue) && !hasUsefulValue(row.LAND_VALUE)) {
+    row.LAND_VALUE = countyRecord.landValue;
+    changed = true;
+    updates.push('LAND_VALUE');
+  }
+  if (hasUsefulValue(countyRecord.improvementValue) && !hasUsefulValue(row.IMPROVEMENT_VALUE)) {
+    row.IMPROVEMENT_VALUE = countyRecord.improvementValue;
+    changed = true;
+    updates.push('IMPROVEMENT_VALUE');
+  }
+  if (hasUsefulValue(countyRecord.netValue) && !hasUsefulValue(row.NET_VALUE)) {
+    row.NET_VALUE = countyRecord.netValue;
+    changed = true;
+    updates.push('NET_VALUE');
+  }
+  if (hasUsefulText(countyRecord.deedBook) && !hasUsefulText(row.DEED_BOOK)) {
+    row.DEED_BOOK = countyRecord.deedBook;
+    changed = true;
+    updates.push('DEED_BOOK');
+  }
+  if (hasUsefulText(countyRecord.deedPage) && !hasUsefulText(row.DEED_PAGE)) {
+    row.DEED_PAGE = countyRecord.deedPage;
+    changed = true;
+    updates.push('DEED_PAGE');
+  }
+  if (hasUsefulText(countyRecord.additionalLots) && !hasUsefulText(row.ADDITIONAL_LOTS)) {
+    row.ADDITIONAL_LOTS = countyRecord.additionalLots;
+    changed = true;
+    updates.push('ADDITIONAL_LOTS');
+  }
+
+  row._recordSource = `${COUNTY_TAX_PRIMARY_SOURCE_LABEL}: ${provider.provider}`;
+  row._recordSourceFields = updates;
+  return changed;
+}
+
+function initRecordSourceDefaults(rows) {
+  for (const row of rows) {
+    row._recordSource = COUNTY_TAX_FALLBACK_SOURCE_LABEL;
+    row._recordSourceFields = [];
+    row._taxRecordCounty = resolveCountyCode(row.COUNTY);
+  }
+}
+
+function loadTaxRecordCache() {
+  try {
+    const raw = localStorage.getItem(COUNTY_TAX_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const now = Date.now();
+    const cleaned = {};
+    for (const [key, entry] of Object.entries(parsed)) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (Number(entry.expiresAt) < now) continue;
+      cleaned[key] = entry;
+    }
+    return cleaned;
+  } catch (err) {
+    console.warn('Failed to load county tax cache:', err);
+    return {};
+  }
+}
+
+function persistTaxRecordCache() {
+  try {
+    localStorage.setItem(COUNTY_TAX_CACHE_KEY, JSON.stringify(taxRecordCache));
+  } catch (err) {
+    console.warn('Failed to persist county tax cache:', err);
+  }
+}
+
+function getCachedTaxRecord(cacheKey) {
+  const entry = cacheKey ? taxRecordCache[cacheKey] : null;
+  if (!entry) return null;
+  if (Number(entry.expiresAt) < Date.now()) {
+    delete taxRecordCache[cacheKey];
+    persistTaxRecordCache();
+    return null;
+  }
+  return {
+    value: entry.value ?? null,
+    hasData: entry.hasData === true
+  };
+}
+
+function setCachedTaxRecord(cacheKey, value) {
+  if (!cacheKey) return;
+  const hasData = !!(
+    value &&
+    typeof value === 'object' &&
+    [
+      'propertyAddress',
+      'ownerName',
+      'ownerAddress',
+      'ownerCityState',
+      'ownerZip',
+      'landValue',
+      'improvementValue',
+      'netValue',
+      'deedBook',
+      'deedPage',
+      'additionalLots'
+    ].some((key) => {
+      if (['landValue', 'improvementValue', 'netValue'].includes(key)) {
+        return hasUsefulValue(value[key]);
+      }
+      return hasUsefulText(value[key]);
+    })
+  );
+  taxRecordCache[cacheKey] = {
+    value: hasData ? value : null,
+    hasData,
+    fetchedAt: Date.now(),
+    expiresAt: Date.now() + COUNTY_TAX_TTL_MS
+  };
+  persistTaxRecordCache();
+}
+
+function safeTrim(value) {
+  return (value ?? '').toString().trim();
+}
+
+function resolveCountyTaxProvider(row) {
+  const countyCode = row._taxRecordCounty || resolveCountyCode(row.COUNTY);
+  if (countyCode && COUNTY_TAX_REGISTRY[countyCode]) return COUNTY_TAX_REGISTRY[countyCode];
+  return COUNTY_TAX_DEFAULT_PROVIDER;
+}
+
+async function fetchCountyRecordFromNjParcels(row, options = {}) {
+  const pin = safeTrim(row.PAMS_PIN);
+  if (!pin) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), COUNTY_TAX_REQUEST_TIMEOUT_MS);
+
+  if (options.signal) {
+    const external = options.signal;
+    if (external.aborted) {
+      clearTimeout(timeout);
+      throw external.reason || new DOMException('Aborted', 'AbortError');
+    }
+    external.addEventListener('abort', () => controller.abort());
+  }
+
+  try {
+    const res = await fetch(`https://cache.njparcels.com/attributes/v1.0/nj/${encodeURIComponent(pin)}?owner=1&assessment=1`, {
+      headers: { 'Accept': 'application/json' },
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error(`County record HTTP ${res.status}`);
+    const payload = await res.json();
+    if (!payload || typeof payload !== 'object') return null;
+    return {
+      pin,
+      propertyAddress: safeTrim(payload.property_location),
+      ownerName: safeTrim(payload.owner_name),
+      ownerAddress: safeTrim(payload.owner_address),
+      ownerCityState: safeTrim(payload.owner_city),
+      ownerZip: safeTrim(payload.owner_zip),
+      landValue: safeNumber(payload.land_value),
+      improvementValue: safeNumber(payload.improvement_value),
+      netValue: safeNumber(payload.net_value),
+      deedBook: safeTrim(payload.deed_book),
+      deedPage: safeTrim(payload.deed_page),
+      additionalLots: safeTrim(payload.additional_lots)
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function enrichRowsWithCountyRecords(rows, options = {}) {
+  const { signal } = options;
+  const lookupByKey = new Map();
+  const lookupOrder = [];
+
+  for (const row of rows) {
+    const pin = safeTrim(row.PAMS_PIN);
+    if (!pin) {
+      row._recordSource = `${COUNTY_TAX_FALLBACK_SOURCE_LABEL} (PIN missing)`;
+      continue;
+    }
+    const provider = resolveCountyTaxProvider(row);
+    if (!provider || !provider.enabled) continue;
+
+    const cacheKey = countyRecordCacheKey(pin);
+    if (!cacheKey) continue;
+
+    const cachedValue = getCachedTaxRecord(cacheKey);
+    if (cachedValue) {
+      if (cachedValue.hasData) {
+        mergeCountyRecord(row, cachedValue.value, provider);
+      }
+      continue;
+    }
+
+    if (!lookupByKey.has(cacheKey)) {
+      lookupByKey.set(cacheKey, { provider, rows: [], cacheKey });
+      lookupOrder.push(cacheKey);
+    }
+    lookupByKey.get(cacheKey).rows.push(row);
+  }
+
+  let next = 0;
+  let lookedUp = 0;
+  let fromCounty = 0;
+  let errors = 0;
+
+  const worker = async () => {
+    while (next < lookupOrder.length) {
+      const idx = next++;
+      const bucket = lookupByKey.get(lookupOrder[idx]);
+      if (!bucket || signal?.aborted) return;
+
+      const row = bucket.rows[0];
+      let record = null;
+      try {
+        lookedUp += 1;
+        record = await bucket.provider.fetch(row, { signal });
+      } catch (err) {
+        errors += 1;
+        if (err?.name !== 'AbortError') {
+          console.error('County record lookup failed:', err);
+        }
+      }
+
+      setCachedTaxRecord(bucket.cacheKey, record);
+      if (record) fromCounty += bucket.rows.length;
+      for (const target of bucket.rows) {
+        mergeCountyRecord(target, record, bucket.provider);
+      }
+    }
+  };
+
+  const workerCount = Math.min(COUNTY_TAX_ENRICHMENT_CONCURRENCY, lookupOrder.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return { lookedUp, fromCounty, errors, totalCandidates: lookupOrder.length };
+}
 
 function buildWhere() {
   const clauses = [];
-  if (filterOos.checked) {
-    const nj = NJ_LIKE_PATTERNS.map(p => `CITY_STATE NOT LIKE '${p}'`).join(' AND ');
-    clauses.push(`(${nj})`);
-  }
-  if (filterDiff.checked) clauses.push("ST_ADDRESS <> PROP_LOC");
   if (filterSold.checked) {
     // DEED_DATE is YYMMDD with a 2-digit year; string compare would put '99' > '20'.
     // Pivot at 30: YY<30 → 20YY, YY≥30 → 19YY. Keep: null, 2000-2019 (<'200101'), 1930-1999 (≥'300101').
@@ -403,9 +795,10 @@ async function runQuery(bounds) {
   const where = buildWhere();
 
   let offset = 0;
+  let truncated = false;
   try {
     while (true) {
-      setStatus(offset === 0 ? 'Querying…' : `Loading… ${currentRows.length.toLocaleString()} rows so far`);
+      setStatus(offset === 0 ? 'Querying parcel layer…' : `Loading… ${currentRows.length.toLocaleString()} rows so far`);
       const body = new URLSearchParams({
         f: 'json',
         geometry,
@@ -428,24 +821,47 @@ async function runQuery(bounds) {
       const features = json.features || [];
       for (const f of features) {
         const a = f.attributes;
-        if (filterOos.checked && !isOutOfState(a.CITY_STATE)) continue;
         currentRows.push(a);
       }
 
       if (currentRows.length >= MAX_ROWS) {
         setStatus(`Stopped at ${MAX_ROWS.toLocaleString()} rows — draw a smaller box for a complete list.`, 'error');
+        truncated = true;
         break;
       }
       if (!json.exceededTransferLimit || features.length < PAGE_SIZE) {
-        setStatus(`Done. ${currentRows.length.toLocaleString()} matching parcel${currentRows.length === 1 ? '' : 's'}.`, 'done');
         break;
       }
       offset += PAGE_SIZE;
     }
+
+    initRecordSourceDefaults(currentRows);
+    const stats = await enrichRowsWithCountyRecords(currentRows, { signal });
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (stats.totalCandidates > 0) {
+      setStatus(`County check: ${stats.fromCounty}/${stats.totalCandidates} rows enriched (${stats.errors} errors).`);
+    }
+
+    currentRows = applyPostQueryFilters(currentRows);
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     computeOwnerCounts(currentRows);
+
+    if (!currentRows.length) {
+      if (truncated) setStatus('No matching parcels in first result window (cap reached).', 'error');
+      else setStatus('No matching parcels after applying filters.', 'done');
+      renderRows(currentRows, { sortedIdx: 0, sortedDir: 'desc' });
+      btnCsv.disabled = true;
+      return;
+    }
+
     sortRows(0, 'desc');
     renderRows(currentRows, { sortedIdx: 0, sortedDir: 'desc' });
-    btnCsv.disabled = currentRows.length === 0;
+    if (truncated) {
+      setStatus(`Done with cap: ${currentRows.length.toLocaleString()} rows.`, 'error');
+    } else {
+      setStatus(`Done. ${currentRows.length.toLocaleString()} matching parcel${currentRows.length === 1 ? '' : 's'}.`, 'done');
+    }
+    btnCsv.disabled = false;
   } catch (err) {
     if (err.name === 'AbortError') return;
     console.error(err);
@@ -485,6 +901,9 @@ function renderRows(rows, opts = {}) {
       }
       if (col.key === 'STATUS') {
         td.classList.add(v === 'Out of State' ? 'status-oos' : 'status-in');
+      }
+      if (col.key === 'DATA_SOURCE' && typeof v === 'string') {
+        td.classList.add(v.includes('County records') ? 'source-county' : 'source-fallback');
       }
       tr.appendChild(td);
     }
@@ -555,6 +974,9 @@ function buildPopupHTML(pin) {
   const row = (label, value) => value ? `<dt>${label}</dt><dd>${escapeHtml(value)}</dd>` : '';
   const sold = formatYymmdd(a.DEED_DATE);
   const price = a.SALE_PRICE ? `$${Number(a.SALE_PRICE).toLocaleString()}` : '';
+  const netValue = formatCurrency(a.NET_VALUE);
+  const landValue = formatCurrency(a.LAND_VALUE);
+  const improvementValue = formatCurrency(a.IMPROVEMENT_VALUE);
   const soldLine = [sold, price].filter(Boolean).join(' · ');
   const url = njParcelsUrl(a);
   const link = url
@@ -569,6 +991,11 @@ function buildPopupHTML(pin) {
         ${row('Block', a.PCLBLOCK)}
         ${row('Lot', a.PCLLOT)}
         ${row('Owner', a.OWNER_NAME)}
+        ${row('Net value', netValue)}
+        ${row('Land value', landValue)}
+        ${row('Improvement value', improvementValue)}
+        ${row('Deed', [a.DEED_BOOK, a.DEED_PAGE].filter(Boolean).join(' / '))}
+        ${row('Source', a._recordSource || COUNTY_TAX_FALLBACK_SOURCE_LABEL)}
         ${row('Mailing', a.ST_ADDRESS)}
         ${row('', [a.CITY_STATE, a.ZIP_CODE].filter(Boolean).join(' '))}
         ${row('Last sold', soldLine)}

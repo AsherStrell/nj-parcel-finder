@@ -27,7 +27,7 @@
       <button id="btn-logout" type="button">Sign out</button>
     </div>
     <h1>NJ Absentee Owner Finder</h1>
-    <p class="muted">Draw a rectangle on the map to list parcels where the owner lives out of state and the mailing address differs from the property address.</p>
+    <p class="muted">Draw a rectangle on the map to list parcels where the owner is out of state and mailing address differs from the property address.</p>
 
     <form id="search-form" class="search-form">
       <input type="text" id="search-input" placeholder="Search address or place…" autocomplete="off" />
@@ -39,6 +39,7 @@
       <label><input type="checkbox" id="filter-oos" checked /> Owner is out of state</label>
       <label><input type="checkbox" id="filter-diff" checked /> Mailing address ≠ property address</label>
       <label><input type="checkbox" id="filter-sold" checked /> Exclude parcels sold after 2019</label>
+      <small class="filters-note">OOS and address-difference filters are applied after county-backed records are loaded.</small>
     </fieldset>
 
     <div id="status" class="status"></div>
@@ -56,8 +57,8 @@
     </section>
 
     <p class="muted small">
-      Data: NJ Office of GIS (NJOGIS) Cadastral Parcels service.
-      Comparisons are literal string equality — expect some false positives where the same address is written two ways.
+      Data source order: county-backed records (NJParcels attribute cache) are attempted for every parcel with a PIN first for owner, address, and assessment fields (including values and deed metadata), then NJOGIS is used as fallback when county payload is missing.
+      Some address comparisons are exact-match only; normalized text may still produce false positives on formatting differences.
     </p>
   </aside>
 
