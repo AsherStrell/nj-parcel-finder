@@ -310,11 +310,11 @@ searchForm.addEventListener('submit', async (e) => {
   const q = searchInput.value.trim();
   if (!q) return;
   btnSearch.disabled = true;
-  setStatus('Searching…');
+  setStatusMessage('Searching…');
   try {
     const hit = await geocodeAddress(q);
     if (!hit) {
-      setStatus(`No match for “${q}”.`, 'error');
+      setStatusMessage(`No match for “${q}”.`, 'error');
       return;
     }
     if (hit.bbox) {
@@ -322,10 +322,10 @@ searchForm.addEventListener('submit', async (e) => {
     } else {
       map.setView([hit.lat, hit.lng], 17);
     }
-    setStatus(`Centered on ${hit.label}`, 'done');
+    setStatusMessage(`Centered on ${hit.label}`, 'done');
   } catch (err) {
     console.error(err);
-    setStatus(`Search failed: ${err.message}`, 'error');
+    setStatusMessage(`Search failed: ${err.message}`, 'error');
   } finally {
     btnSearch.disabled = false;
   }
@@ -359,14 +359,47 @@ const btnClear = document.getElementById('btn-clear');
 const filterOos = document.getElementById('filter-oos');
 const filterDiff = document.getElementById('filter-diff');
 const filterSold = document.getElementById('filter-sold');
-const pinsListEl = document.getElementById('pins-list');
-const pinsCountEl = document.getElementById('pins-count');
+const pinsSectionEl = document.getElementById('pins-section');
+const tabButtons = Array.from(pinsSectionEl.querySelectorAll('.tab'));
+const panels = {
+  pinned:  document.getElementById('list-pinned'),
+  reached: document.getElementById('list-reached'),
+  notes:   document.getElementById('list-notes')
+};
+const counts = {
+  pinned:  document.getElementById('count-pinned'),
+  reached: document.getElementById('count-reached'),
+  notes:   document.getElementById('count-notes')
+};
+
+let activeTab = 'pinned';
 
 const pins = new Map();
 const pendingPinFetches = new Set();
 loadPins();
 renderPinsList();
 buildHeader();
+
+for (const btn of tabButtons) {
+  btn.addEventListener('click', () => {
+    activeTab = btn.dataset.tab;
+    for (const b of tabButtons) b.classList.toggle('active', b === btn);
+    for (const [name, el] of Object.entries(panels)) el.classList.toggle('hidden', name !== activeTab);
+  });
+}
+
+for (const [name, el] of Object.entries(panels)) {
+  el.addEventListener('click', (e) => handlePanelClick(e, name));
+  el.addEventListener('input', (e) => {
+    const ta = e.target.closest('textarea[data-notes-id]');
+    if (ta) updateNotes(ta.dataset.notesId, ta.value);
+  });
+  el.addEventListener('blur', (e) => {
+    if (e.target.matches?.('textarea[data-notes-id]')) flushNotesSave();
+  }, true);
+}
+
+window.addEventListener('beforeunload', flushNotesSave);
 
 let currentRows = [];
 let activeController = null;
@@ -382,7 +415,7 @@ btnClear.addEventListener('click', () => {
   drawnItems.clearLayers();
   currentRows = [];
   renderRows([]);
-  setStatus('');
+  setStatusMessage('');
   btnCsv.disabled = true;
   btnClear.disabled = true;
 });
@@ -816,7 +849,7 @@ async function runQuery(bounds) {
   let truncated = false;
   try {
     while (true) {
-      setStatus(offset === 0 ? 'Querying parcel layer…' : `Loading… ${currentRows.length.toLocaleString()} rows so far`);
+      setStatusMessage(offset === 0 ? 'Querying parcel layer…' : `Loading… ${currentRows.length.toLocaleString()} rows so far`);
       const body = new URLSearchParams({
         f: 'json',
         geometry,
@@ -843,7 +876,7 @@ async function runQuery(bounds) {
       }
 
       if (currentRows.length >= MAX_ROWS) {
-        setStatus(`Stopped at ${MAX_ROWS.toLocaleString()} rows — draw a smaller box for a complete list.`, 'error');
+        setStatusMessage(`Stopped at ${MAX_ROWS.toLocaleString()} rows — draw a smaller box for a complete list.`, 'error');
         truncated = true;
         break;
       }
@@ -860,14 +893,14 @@ async function runQuery(bounds) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     currentRows = applyPostQueryFilters(currentRows);
     if (stats.totalCandidates > 0) {
-      setStatus(`County check: ${stats.fromCounty}/${stats.totalCandidates} rows enriched (${stats.errors} errors).`);
+      setStatusMessage(`County check: ${stats.fromCounty}/${stats.totalCandidates} rows enriched (${stats.errors} errors).`);
     }
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     computeOwnerCounts(currentRows);
 
     if (!currentRows.length) {
-      if (truncated) setStatus('No matching parcels in first result window (cap reached).', 'error');
-      else setStatus('No matching parcels after applying filters.', 'done');
+      if (truncated) setStatusMessage('No matching parcels in first result window (cap reached).', 'error');
+      else setStatusMessage('No matching parcels after applying filters.', 'done');
       renderRows(currentRows, { sortedIdx: 0, sortedDir: 'desc' });
       btnCsv.disabled = true;
       return;
@@ -876,15 +909,15 @@ async function runQuery(bounds) {
     sortRows(0, 'desc');
     renderRows(currentRows, { sortedIdx: 0, sortedDir: 'desc' });
     if (truncated) {
-      setStatus(`Done with cap: ${currentRows.length.toLocaleString()} rows.`, 'error');
+      setStatusMessage(`Done with cap: ${currentRows.length.toLocaleString()} rows.`, 'error');
     } else {
-      setStatus(`Done. ${currentRows.length.toLocaleString()} matching parcel${currentRows.length === 1 ? '' : 's'}.`, 'done');
+      setStatusMessage(`Done. ${currentRows.length.toLocaleString()} matching parcel${currentRows.length === 1 ? '' : 's'}.`, 'done');
     }
     btnCsv.disabled = false;
   } catch (err) {
     if (err.name === 'AbortError') return;
     console.error(err);
-    setStatus(`Error: ${err.message}`, 'error');
+    setStatusMessage(`Error: ${err.message}`, 'error');
   } finally {
     activeController = null;
   }
@@ -947,11 +980,11 @@ async function pinRow(row) {
   pendingPinFetches.add(id);
   const prev = statusEl.textContent;
   const prevCls = statusEl.className;
-  setStatus('Locating parcel on map…');
+  setStatusMessage('Locating parcel on map…');
   try {
     const { lat, lng } = await fetchCentroid(id);
     if (pins.has(id)) return;
-    const pin = { id, lat, lng, attrs: { ...row } };
+    const pin = { id, lat, lng, attrs: { ...row }, status: 'pinned', notes: '' };
     pin.marker = makeMarker(pin);
     pins.set(id, pin);
     savePins();
@@ -961,7 +994,7 @@ async function pinRow(row) {
     statusEl.className = prevCls;
   } catch (err) {
     console.error(err);
-    setStatus(`Could not pin parcel: ${err.message}`, 'error');
+    setStatusMessage(`Could not pin parcel: ${err.message}`, 'error');
   } finally {
     pendingPinFetches.delete(id);
   }
@@ -977,8 +1010,19 @@ function unpin(id) {
   markRowPinned(id, false);
 }
 
+function createMarkerIcon(status) {
+  const variant = status === 'reached_out' ? 'reached' : 'pinned';
+  return L.divIcon({
+    className: `parcel-marker parcel-marker-${variant}`,
+    html: '<span class="parcel-marker-pin"></span>',
+    iconSize: [24, 28],
+    iconAnchor: [12, 26],
+    popupAnchor: [0, -24]
+  });
+}
+
 function makeMarker(pin) {
-  const marker = L.marker([pin.lat, pin.lng]).addTo(map);
+  const marker = L.marker([pin.lat, pin.lng], { icon: createMarkerIcon(pin.status) }).addTo(map);
   marker.bindPopup(() => buildPopupHTML(pin), { maxWidth: 280 });
   marker.on('popupopen', (e) => {
     const node = e.popup.getElement();
@@ -1025,44 +1069,162 @@ function buildPopupHTML(pin) {
   `;
 }
 
-function renderPinsList() {
-  pinsListEl.replaceChildren();
-  pinsCountEl.textContent = String(pins.size);
-  if (pins.size === 0) {
-    const empty = document.createElement('li');
-    empty.className = 'pins-empty';
-    empty.textContent = 'Click a row in the results to pin a property.';
-    pinsListEl.appendChild(empty);
-    return;
-  }
-  const items = Array.from(pins.values()).sort((a, b) =>
-    (a.attrs.PROP_LOC || '').localeCompare(b.attrs.PROP_LOC || '')
-  );
-  for (const pin of items) {
-    const li = document.createElement('li');
-    li.className = 'pin-item';
-    const sold = formatYymmdd(pin.attrs.DEED_DATE);
-    const subParts = [
-      pin.attrs.MUN_NAME || '',
-      `Blk ${pin.attrs.PCLBLOCK || ''} Lot ${pin.attrs.PCLLOT || ''}`
-    ];
-    if (sold) subParts.push(`sold ${sold}`);
-    li.innerHTML = `
+function pinListItem(pin, { showNotesInline = false, showBadge = false } = {}) {
+  const li = document.createElement('li');
+  li.className = 'pin-item';
+  li.dataset.pinId = pin.id;
+
+  const sold = formatYymmdd(pin.attrs.DEED_DATE);
+  const subParts = [
+    pin.attrs.MUN_NAME || '',
+    `Blk ${pin.attrs.PCLBLOCK || ''} Lot ${pin.attrs.PCLLOT || ''}`
+  ];
+  if (sold) subParts.push(`sold ${sold}`);
+
+  const badge = showBadge
+    ? `<span class="status-badge ${pin.status === 'reached_out' ? 'reached' : 'pinned'}">${pin.status === 'reached_out' ? 'Reached out' : 'Pinned'}</span>`
+    : '';
+
+  const actions = pin.status === 'reached_out'
+    ? `<button class="pin-action" data-action="unreach" type="button" title="Move back to Pinned">↩ Un-reach</button>`
+    : `<button class="pin-action" data-action="reached" type="button" title="Mark as reached out">✓ Reached out</button>`;
+
+  const notesOpen = showNotesInline || !!pin._notesOpen;
+  const notesHasText = (pin.notes || '').length > 0;
+  const notesToggle = showNotesInline
+    ? ''
+    : `<button class="pin-action" data-action="toggle-notes" type="button" title="Toggle notes">📝 Notes${notesHasText ? ' •' : ''}</button>`;
+
+  li.innerHTML = `
+    <div class="pin-row">
       <div class="pin-info">
-        <div class="pin-addr">${escapeHtml(pin.attrs.PROP_LOC || '(no address)')}</div>
+        <div class="pin-addr"><span class="pin-addr-text">${escapeHtml(pin.attrs.PROP_LOC || '(no address)')}</span>${badge}</div>
         <div class="pin-sub">${subParts.map(escapeHtml).join(' • ')}</div>
       </div>
-      <button class="pin-remove" type="button" title="Remove pin">×</button>
-    `;
-    li.addEventListener('click', (e) => {
-      if (e.target.classList.contains('pin-remove')) {
-        unpin(pin.id);
-      } else {
-        map.setView([pin.lat, pin.lng], Math.max(map.getZoom(), 17));
-        pin.marker.openPopup();
-      }
-    });
-    pinsListEl.appendChild(li);
+      <button class="pin-remove" data-action="remove" type="button" title="Remove pin">×</button>
+    </div>
+    <div class="pin-action-row">
+      ${actions}
+      ${notesToggle}
+    </div>
+    <div class="pin-notes ${notesOpen ? '' : 'hidden'}">
+      <textarea class="pin-notes-editor" data-notes-id="${escapeHtml(pin.id)}" placeholder="Notes about this property…" rows="3">${escapeHtml(pin.notes || '')}</textarea>
+    </div>
+  `;
+  return li;
+}
+
+function emptyMessage(text) {
+  const li = document.createElement('li');
+  li.className = 'pins-empty';
+  li.textContent = text;
+  return li;
+}
+
+function renderPinsList() {
+  const all = Array.from(pins.values()).sort((a, b) =>
+    (a.attrs.PROP_LOC || '').localeCompare(b.attrs.PROP_LOC || '')
+  );
+  const pinnedItems  = all.filter(p => p.status !== 'reached_out');
+  const reachedItems = all.filter(p => p.status === 'reached_out');
+  const notesItems   = all.filter(p => (p.notes || '').trim() !== '');
+
+  panels.pinned.replaceChildren();
+  if (pinnedItems.length === 0) {
+    panels.pinned.appendChild(emptyMessage('Click a row in the results to pin a property.'));
+  } else {
+    for (const pin of pinnedItems) panels.pinned.appendChild(pinListItem(pin));
+  }
+
+  panels.reached.replaceChildren();
+  if (reachedItems.length === 0) {
+    panels.reached.appendChild(emptyMessage('Mark a pinned property as reached out to see it here.'));
+  } else {
+    for (const pin of reachedItems) panels.reached.appendChild(pinListItem(pin));
+  }
+
+  panels.notes.replaceChildren();
+  if (notesItems.length === 0) {
+    panels.notes.appendChild(emptyMessage('No notes yet. Open a property and add notes with 📝.'));
+  } else {
+    for (const pin of notesItems) panels.notes.appendChild(pinListItem(pin, { showNotesInline: true, showBadge: true }));
+  }
+
+  updateTabCounts();
+}
+
+function updateTabCounts() {
+  let pinned = 0, reached = 0, notes = 0;
+  for (const pin of pins.values()) {
+    if (pin.status === 'reached_out') reached++;
+    else pinned++;
+    if ((pin.notes || '').trim() !== '') notes++;
+  }
+  counts.pinned.textContent  = String(pinned);
+  counts.reached.textContent = String(reached);
+  counts.notes.textContent   = String(notes);
+}
+
+function handlePanelClick(e, panelName) {
+  const li = e.target.closest('li.pin-item');
+  if (!li) return;
+  const id = li.dataset.pinId;
+  const pin = pins.get(id);
+  if (!pin) return;
+
+  const actionBtn = e.target.closest('[data-action]');
+  if (actionBtn) {
+    const action = actionBtn.dataset.action;
+    if (action === 'remove')        { unpin(id); return; }
+    if (action === 'reached')       { setPinStatus(id, 'reached_out'); return; }
+    if (action === 'unreach')       { setPinStatus(id, 'pinned'); return; }
+    if (action === 'toggle-notes')  { togglePinNotes(id); return; }
+  }
+
+  // Don't intercept clicks inside the textarea.
+  if (e.target.closest('textarea')) return;
+
+  map.setView([pin.lat, pin.lng], Math.max(map.getZoom(), 17));
+  if (pin.marker) pin.marker.openPopup();
+}
+
+function setPinStatus(id, newStatus) {
+  const pin = pins.get(id);
+  if (!pin || pin.status === newStatus) return;
+  pin.status = newStatus;
+  if (pin.marker) pin.marker.setIcon(createMarkerIcon(newStatus));
+  savePins();
+  renderPinsList();
+}
+
+function togglePinNotes(id) {
+  const pin = pins.get(id);
+  if (!pin) return;
+  pin._notesOpen = !pin._notesOpen;
+  renderPinsList();
+  // After re-render, focus the textarea if we just opened it.
+  if (pin._notesOpen) {
+    const ta = panels[activeTab]?.querySelector(`textarea[data-notes-id="${CSS.escape(id)}"]`);
+    if (ta) ta.focus();
+  }
+}
+
+let notesSaveTimer = null;
+function updateNotes(id, text) {
+  const pin = pins.get(id);
+  if (!pin) return;
+  const had = (pin.notes || '').trim() !== '';
+  pin.notes = text;
+  const has = (pin.notes || '').trim() !== '';
+  if (had !== has) updateTabCounts();
+  clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(() => { notesSaveTimer = null; savePins(); }, 300);
+}
+function flushNotesSave() {
+  if (notesSaveTimer !== null) {
+    clearTimeout(notesSaveTimer);
+    notesSaveTimer = null;
+    savePins();
   }
 }
 
@@ -1095,7 +1257,14 @@ function loadPins() {
     if (!raw) return;
     const arr = JSON.parse(raw);
     for (const p of arr) {
-      const pin = { id: p.id, lat: p.lat, lng: p.lng, attrs: p.attrs };
+      const pin = {
+        id: p.id,
+        lat: p.lat,
+        lng: p.lng,
+        attrs: p.attrs,
+        status: p.status === 'reached_out' ? 'reached_out' : 'pinned',
+        notes: typeof p.notes === 'string' ? p.notes : ''
+      };
       pin.marker = makeMarker(pin);
       pins.set(pin.id, pin);
     }
@@ -1105,7 +1274,14 @@ function loadPins() {
 }
 
 function savePins() {
-  const arr = Array.from(pins.values()).map(p => ({ id: p.id, lat: p.lat, lng: p.lng, attrs: p.attrs }));
+  const arr = Array.from(pins.values()).map(p => ({
+    id: p.id,
+    lat: p.lat,
+    lng: p.lng,
+    attrs: p.attrs,
+    status: p.status || 'pinned',
+    notes: p.notes || ''
+  }));
   localStorage.setItem(PINS_STORAGE_KEY, JSON.stringify(arr));
 }
 
@@ -1115,7 +1291,7 @@ function escapeHtml(s) {
   }[c]));
 }
 
-function setStatus(text, cls = '') {
+function setStatusMessage(text, cls = '') {
   statusEl.textContent = text;
   statusEl.className = 'status' + (cls ? ' ' + cls : '');
 }

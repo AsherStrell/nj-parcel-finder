@@ -50,10 +50,14 @@
     </div>
 
     <section id="pins-section">
-      <h2>Pinned Properties <span id="pins-count" class="pins-count">0</span></h2>
-      <ul id="pins-list">
-        <li class="pins-empty">Click a row in the results to pin a property.</li>
-      </ul>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="pinned"  type="button" role="tab">Pinned <span class="tab-count" id="count-pinned">0</span></button>
+        <button class="tab"        data-tab="reached" type="button" role="tab">Reached Out <span class="tab-count" id="count-reached">0</span></button>
+        <button class="tab"        data-tab="notes"   type="button" role="tab">Notes <span class="tab-count" id="count-notes">0</span></button>
+      </div>
+      <ul class="pin-list"        id="list-pinned"  data-panel="pinned"></ul>
+      <ul class="pin-list hidden" id="list-reached" data-panel="reached"></ul>
+      <ul class="pin-list hidden" id="list-notes"   data-panel="notes"></ul>
     </section>
 
     <p class="muted small">
