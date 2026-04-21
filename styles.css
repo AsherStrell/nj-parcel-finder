@@ -113,6 +113,8 @@ fieldset label {
 #results-table tbody tr.pinned:hover { background: #ffeccc; }
 #results-table td.status-oos { color: #b34a00; font-weight: 600; }
 #results-table td.status-in  { color: #6b6b70; }
+#results-table td a { color: #007aff; text-decoration: none; }
+#results-table td a:hover { text-decoration: underline; }
 
 #pins-section {
   margin-top: 16px;
@@ -199,6 +201,9 @@ fieldset label {
 }
 .parcel-popup dt { color: #6b6b70; }
 .parcel-popup dd { margin: 0; }
+.parcel-popup .popup-link { margin: 8px 0 0; font-size: 12px; }
+.parcel-popup .popup-link a { color: #007aff; text-decoration: none; }
+.parcel-popup .popup-link a:hover { text-decoration: underline; }
 .parcel-popup .popup-remove {
   margin-top: 8px;
   padding: 4px 10px;

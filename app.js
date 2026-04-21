@@ -61,9 +61,21 @@ const COLUMNS = [
   { key: 'MUN_NAME',    label: 'Municipality' },
   { key: 'COUNTY',      label: 'County' },
   { key: 'PCLBLOCK',    label: 'Block' },
-  { key: 'PCLLOT',      label: 'Lot' }
+  { key: 'PCLLOT',      label: 'Lot' },
+  { key: 'DEED_DATE',   label: 'Last Sold',
+      display: r => formatYymmdd(r.DEED_DATE),
+      sortKey: r => yymmddSortKey(r.DEED_DATE) },
+  { key: 'SALE_PRICE',  label: 'Sale Price',
+      display: r => r.SALE_PRICE ? `$${Number(r.SALE_PRICE).toLocaleString()}` : '',
+      sortKey: r => Number(r.SALE_PRICE) || 0,
+      numeric: true },
+  { key: 'SALES_CODE',  label: 'Sale Code' },
+  { key: 'NJP_LINK',    label: 'NJparcels',
+      display: r => r.PAMS_PIN ? 'Open' : '',
+      href:    r => njParcelsUrl(r),
+      skipSort: true }
 ];
-const SERVICE_FIELDS = ['PAMS_PIN', ...COLUMNS.filter(c => !c.compute).map(c => c.key)];
+const SERVICE_FIELDS = ['PAMS_PIN', ...COLUMNS.filter(c => !c.compute && c.key !== 'NJP_LINK').map(c => c.key)];
 
 const FULL_STATE_NAMES = {
   'NEW JERSEY': 'NJ', 'NEW YORK': 'NY', 'PENNSYLVANIA': 'PA',
@@ -107,6 +119,37 @@ function cellValue(row, col) {
   return row[col.key] ?? '';
 }
 
+function formatYymmdd(s) {
+  if (!s || typeof s !== 'string' || s.length !== 6) return '';
+  if (!/^\d{6}$/.test(s)) return '';
+  const yy = s.slice(0, 2), mm = s.slice(2, 4), dd = s.slice(4, 6);
+  const year = Number(yy) >= 30 ? `19${yy}` : `20${yy}`;
+  return `${year}-${mm}-${dd}`;
+}
+
+function yymmddSortKey(s) {
+  if (!s || typeof s !== 'string' || s.length !== 6 || !/^\d{6}$/.test(s)) return '';
+  const century = Number(s.slice(0, 2)) >= 30 ? '19' : '20';
+  return century + s;
+}
+
+function parsePamsPin(pin) {
+  if (!pin) return null;
+  const parts = pin.split('_');
+  if (parts.length < 3) return null;
+  const [muni, block, lot, qual] = parts;
+  if (!muni || !block || !lot) return null;
+  return { muni, block, lot, qual: qual || '' };
+}
+
+function njParcelsUrl(row) {
+  const p = parsePamsPin(row.PAMS_PIN);
+  if (!p) return '';
+  const segs = [p.muni, p.block, p.lot];
+  if (p.qual) segs.push(p.qual);
+  return `https://njparcels.com/property/${segs.map(encodeURIComponent).join('/')}`;
+}
+
 const map = L.map('map').setView([40.0583, -74.4057], 8);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
@@ -130,6 +173,7 @@ const btnCsv = document.getElementById('btn-csv');
 const btnClear = document.getElementById('btn-clear');
 const filterOos = document.getElementById('filter-oos');
 const filterDiff = document.getElementById('filter-diff');
+const filterSold = document.getElementById('filter-sold');
 const pinsListEl = document.getElementById('pins-list');
 const pinsCountEl = document.getElementById('pins-count');
 
@@ -178,6 +222,7 @@ theadRow.addEventListener('click', (e) => {
   const th = e.target.closest('th');
   if (!th) return;
   const idx = Array.from(theadRow.children).indexOf(th);
+  if (COLUMNS[idx]?.skipSort) return;
   const dir = th.classList.contains('sort-asc') ? 'desc' : 'asc';
   sortRows(idx, dir);
   renderRows(currentRows, { sortedIdx: idx, sortedDir: dir });
@@ -194,14 +239,13 @@ function buildHeader() {
 
 function sortRows(idx, dir) {
   const col = COLUMNS[idx];
+  if (col.skipSort) return;
   const mul = dir === 'asc' ? 1 : -1;
+  const valueOf = col.sortKey ? col.sortKey : (r) => cellValue(r, col);
   currentRows.sort((a, b) => {
-    if (col.numeric) {
-      return (Number(cellValue(a, col)) - Number(cellValue(b, col))) * mul;
-    }
-    const va = cellValue(a, col).toString();
-    const vb = cellValue(b, col).toString();
-    return va.localeCompare(vb) * mul;
+    const va = valueOf(a), vb = valueOf(b);
+    if (col.numeric) return ((Number(va) || 0) - (Number(vb) || 0)) * mul;
+    return String(va).localeCompare(String(vb)) * mul;
   });
 }
 
@@ -247,6 +291,11 @@ function buildWhere() {
     clauses.push(`(${nj})`);
   }
   if (filterDiff.checked) clauses.push("ST_ADDRESS <> PROP_LOC");
+  if (filterSold.checked) {
+    // DEED_DATE is YYMMDD with a 2-digit year; string compare would put '99' > '20'.
+    // Pivot at 30: YY<30 → 20YY, YY≥30 → 19YY. Keep: null, 2000-2019 (<'200101'), 1930-1999 (≥'300101').
+    clauses.push("(DEED_DATE IS NULL OR DEED_DATE < '200101' OR DEED_DATE >= '300101')");
+  }
   return clauses.length ? clauses.join(' AND ') : '1=1';
 }
 
@@ -334,7 +383,20 @@ function renderRows(rows, opts = {}) {
     for (const col of COLUMNS) {
       const td = document.createElement('td');
       const v = cellValue(r, col);
-      td.textContent = v;
+      if (col.href) {
+        const url = col.href(r);
+        if (url && v) {
+          const a = document.createElement('a');
+          a.href = url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = v;
+          a.addEventListener('click', (e) => e.stopPropagation());
+          td.appendChild(a);
+        }
+      } else {
+        td.textContent = v;
+      }
       if (col.key === 'STATUS') {
         td.classList.add(v === 'Out of State' ? 'status-oos' : 'status-in');
       }
@@ -405,6 +467,13 @@ function makeMarker(pin) {
 function buildPopupHTML(pin) {
   const a = pin.attrs;
   const row = (label, value) => value ? `<dt>${label}</dt><dd>${escapeHtml(value)}</dd>` : '';
+  const sold = formatYymmdd(a.DEED_DATE);
+  const price = a.SALE_PRICE ? `$${Number(a.SALE_PRICE).toLocaleString()}` : '';
+  const soldLine = [sold, price].filter(Boolean).join(' · ');
+  const url = njParcelsUrl(a);
+  const link = url
+    ? `<p class="popup-link"><a href="${url}" target="_blank" rel="noopener noreferrer">Verify on NJparcels.com →</a></p>`
+    : '';
   return `
     <div class="parcel-popup">
       <h3>${escapeHtml(a.PROP_LOC || '(no address)')}</h3>
@@ -416,7 +485,9 @@ function buildPopupHTML(pin) {
         ${row('Owner', a.OWNER_NAME)}
         ${row('Mailing', a.ST_ADDRESS)}
         ${row('', [a.CITY_STATE, a.ZIP_CODE].filter(Boolean).join(' '))}
+        ${row('Last sold', soldLine)}
       </dl>
+      ${link}
       <button class="popup-remove" type="button">Remove pin</button>
     </div>
   `;
@@ -438,10 +509,16 @@ function renderPinsList() {
   for (const pin of items) {
     const li = document.createElement('li');
     li.className = 'pin-item';
+    const sold = formatYymmdd(pin.attrs.DEED_DATE);
+    const subParts = [
+      pin.attrs.MUN_NAME || '',
+      `Blk ${pin.attrs.PCLBLOCK || ''} Lot ${pin.attrs.PCLLOT || ''}`
+    ];
+    if (sold) subParts.push(`sold ${sold}`);
     li.innerHTML = `
       <div class="pin-info">
         <div class="pin-addr">${escapeHtml(pin.attrs.PROP_LOC || '(no address)')}</div>
-        <div class="pin-sub">${escapeHtml(pin.attrs.MUN_NAME || '')} • Blk ${escapeHtml(pin.attrs.PCLBLOCK || '')} Lot ${escapeHtml(pin.attrs.PCLLOT || '')}</div>
+        <div class="pin-sub">${subParts.map(escapeHtml).join(' • ')}</div>
       </div>
       <button class="pin-remove" type="button" title="Remove pin">×</button>
     `;
@@ -517,7 +594,9 @@ function downloadCsv(rows) {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [COLUMNS.map(c => c.label).map(escape).join(',')];
-  for (const r of rows) lines.push(COLUMNS.map(c => escape(cellValue(r, c))).join(','));
+  for (const r of rows) {
+    lines.push(COLUMNS.map(c => escape(c.href ? c.href(r) : cellValue(r, c))).join(','));
+  }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
