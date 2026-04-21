@@ -48,6 +48,38 @@ fieldset label {
   cursor: pointer;
 }
 
+.search-form {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0;
+}
+.search-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid #c7c7cc;
+  border-radius: 6px;
+  background: #fff;
+}
+.search-form input:focus {
+  outline: none;
+  border-color: #007aff;
+  box-shadow: 0 0 0 3px rgba(0,122,255,0.2);
+}
+.search-form button {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: #007aff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.search-form button:hover { background: #0066d6; }
+.search-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .status {
   min-height: 40px;
   padding: 8px 10px;

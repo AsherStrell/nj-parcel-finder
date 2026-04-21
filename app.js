@@ -177,6 +177,56 @@ const drawControl = new L.Control.Draw({
 });
 map.addControl(drawControl);
 
+const searchForm = document.getElementById('search-form');
+const searchInput = document.getElementById('search-input');
+const btnSearch = document.getElementById('btn-search');
+
+searchForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = searchInput.value.trim();
+  if (!q) return;
+  btnSearch.disabled = true;
+  setStatus('Searching…');
+  try {
+    const hit = await geocodeAddress(q);
+    if (!hit) {
+      setStatus(`No match for “${q}”.`, 'error');
+      return;
+    }
+    if (hit.bbox) {
+      map.fitBounds(hit.bbox, { maxZoom: 18 });
+    } else {
+      map.setView([hit.lat, hit.lng], 17);
+    }
+    setStatus(`Centered on ${hit.label}`, 'done');
+  } catch (err) {
+    console.error(err);
+    setStatus(`Search failed: ${err.message}`, 'error');
+  } finally {
+    btnSearch.disabled = false;
+  }
+});
+
+async function geocodeAddress(q) {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('q', q);
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('countrycodes', 'us');
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const arr = await res.json();
+  const h = arr[0];
+  if (!h) return null;
+  const lat = Number(h.lat), lng = Number(h.lon);
+  let bbox = null;
+  if (Array.isArray(h.boundingbox) && h.boundingbox.length === 4) {
+    const [s, n, w, e] = h.boundingbox.map(Number);
+    bbox = [[s, w], [n, e]];
+  }
+  return { lat, lng, bbox, label: h.display_name || q };
+}
+
 const statusEl = document.getElementById('status');
 const tbody = document.querySelector('#results-table tbody');
 const theadRow = document.querySelector('#results-table thead tr');

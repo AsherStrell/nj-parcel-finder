@@ -29,6 +29,11 @@
     <h1>NJ Absentee Owner Finder</h1>
     <p class="muted">Draw a rectangle on the map to list parcels where the owner lives out of state and the mailing address differs from the property address.</p>
 
+    <form id="search-form" class="search-form">
+      <input type="text" id="search-input" placeholder="Search address or place…" autocomplete="off" />
+      <button type="submit" id="btn-search">Go</button>
+    </form>
+
     <fieldset>
       <legend>Filters</legend>
       <label><input type="checkbox" id="filter-oos" checked /> Owner is out of state</label>
