@@ -44,6 +44,7 @@ const AUTH_STORAGE_KEY = 'nj-parcel-user';
 const SERVICE_URL = 'https://maps.nj.gov/arcgis/rest/services/Framework/Cadastral/MapServer/0/query';
 const PAGE_SIZE = 1000;
 const MAX_ROWS = 10000;
+const PINS_STORAGE_KEY = 'nj-parcel-pins';
 
 const COLUMNS = [
   { key: 'STATUS',      label: 'Status',           compute: r => isOutOfState(r.CITY_STATE) ? 'Out of State' : 'In State' },
@@ -92,7 +93,6 @@ function extractState(cityState) {
   }
   return '';
 }
-const PINS_STORAGE_KEY = 'nj-parcel-pins';
 
 function isOutOfState(cityState) {
   const st = extractState(cityState);
@@ -133,6 +133,7 @@ const pinsListEl = document.getElementById('pins-list');
 const pinsCountEl = document.getElementById('pins-count');
 
 const pins = new Map();
+const pendingPinFetches = new Set();
 loadPins();
 renderPinsList();
 buildHeader();
@@ -162,12 +163,14 @@ tbody.addEventListener('click', (e) => {
   const tr = e.target.closest('tr');
   if (!tr || !tr.dataset.pin) return;
   const id = tr.dataset.pin;
-  if (pins.has(id)) {
-    unpin(id);
-  } else {
-    const row = currentRows.find(r => r.PAMS_PIN === id);
-    if (row) pinRow(row);
+  const existing = pins.get(id);
+  if (existing) {
+    map.setView([existing.lat, existing.lng], Math.max(map.getZoom(), 17));
+    if (existing.marker) existing.marker.openPopup();
+    return;
   }
+  const row = currentRows.find(r => r.PAMS_PIN === id);
+  if (row) pinRow(row);
 });
 
 theadRow.addEventListener('click', (e) => {
@@ -326,12 +329,14 @@ function markRowPinned(id, pinned) {
 
 async function pinRow(row) {
   const id = row.PAMS_PIN;
-  if (!id || pins.has(id)) return;
+  if (!id || pins.has(id) || pendingPinFetches.has(id)) return;
+  pendingPinFetches.add(id);
   const prev = statusEl.textContent;
   const prevCls = statusEl.className;
   setStatus('Locating parcel on map…');
   try {
     const { lat, lng } = await fetchCentroid(id);
+    if (pins.has(id)) return;
     const pin = { id, lat, lng, attrs: { ...row } };
     pin.marker = makeMarker(pin);
     pins.set(id, pin);
@@ -343,6 +348,8 @@ async function pinRow(row) {
   } catch (err) {
     console.error(err);
     setStatus(`Could not pin parcel: ${err.message}`, 'error');
+  } finally {
+    pendingPinFetches.delete(id);
   }
 }
 
